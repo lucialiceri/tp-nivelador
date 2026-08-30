@@ -66,7 +66,7 @@ func (client *Client) Run() error {
 	const mainAction = "test-echo-server"
 	defer client.conn.Close()
 
-	// abre archivo para INPUT
+	// opens file for INPUT
 	input, err := os.Open(client.config.InputFile)
 	if err != nil {
 		logger.Error("open-input-file", logger.Fail, "file", client.config.InputFile)
@@ -74,7 +74,7 @@ func (client *Client) Run() error {
 	}
 	defer input.Close()
 
-	// abre archivo para OUTPUT
+	// opens file for OUTPUT
 	output, err := os.OpenFile(
 		client.config.OutputFile,
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
