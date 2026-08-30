@@ -1,6 +1,8 @@
 package client
 
 import (
+	"os"
+	"bufio"
 	"net"
 	"time"
 
@@ -19,6 +21,8 @@ type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
+	InputFile  string
+	OutputFile string
 }
 
 type Client struct {
@@ -62,11 +66,35 @@ func (client *Client) Run() error {
 	const mainAction = "test-echo-server"
 	defer client.conn.Close()
 
-	for messageId := range ECHO_CLIENT_MESSAGE_AMOUNT {
-		messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
+	// abre archivo para INPUT
+	input, err := os.Open(client.config.InputFile)
+	if err != nil {
+		logger.Error("open-input-file", logger.Fail, "file", client.config.InputFile)
+		return err
+	}
+	defer input.Close()
+
+	// abre archivo para OUTPUT
+	output, err := os.OpenFile(
+		client.config.OutputFile,
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
+		0644,
+	)
+	if err != nil {
+		logger.Error("open-output-file", logger.Fail, "file", client.config.OutputFile)
+		return err
+	}
+	defer output.Close()
+	
+	scanner := bufio.NewScanner(input)
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		messageArgs := []any{"agency-id", client.config.AgencyId, "line", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		clientMessage := client.config.AgencyId
+		clientMessage := line
 
 		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
 			logger.Error("send-message", logger.Fail, messageArgs...)
@@ -79,13 +107,25 @@ func (client *Client) Run() error {
 			return err
 		}
 
-		if string(responseBuffer) != clientMessage {
-			logger.Error("check-response", logger.Fail, messageArgs...)
+		_, err = output.Write(append(responseBuffer, []byte("\n")...))
+		if err != nil {
+			logger.Error("write-output", logger.Fail, messageArgs...)
 			return err
 		}
+		
+		//if string(responseBuffer) != clientMessage {
+			//logger.Error("check-response", logger.Fail, messageArgs...)
+			//return err
+		//}
 
 		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
 	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Error("scan-input-file", logger.Fail, "file", client.config.InputFile)
+		return err
+	}
+
 	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 
 	return nil
