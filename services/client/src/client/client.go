@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"net"
 	"time"
+	"encoding/binary"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
@@ -13,9 +14,9 @@ import (
 const CONNECTION_ATTEMPTS_MAX = 3
 const CONNECTION_ATTEMPS_DELAY_MS = 200
 
-const ECHO_CLIENT_BUFFER_SIZE = 512
-const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
+//const ECHO_CLIENT_BUFFER_SIZE = 512
+//const ECHO_CLIENT_MESSAGE_AMOUNT = 3
+//const ECHO_CLIENT_MESSAGE_DELAY_MS = 100
 
 type ClientConfig struct {
 	ServerHost string
@@ -94,35 +95,51 @@ func (client *Client) Run() error {
 		messageArgs := []any{"agency-id", client.config.AgencyId, "line", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		clientMessage := line
+		clientMessage := client.config.AgencyId + "," + line
+		line_size := len(clientMessage)
 
+		line_size_bytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(line_size_bytes, uint32(line_size))
+		
+		if err := safe_socket.SendAll(client.conn, line_size_bytes); err != nil {
+			logger.Error("send-message", logger.Fail, messageArgs...)
+			return err
+		}
+		
 		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
 			logger.Error("send-message", logger.Fail, messageArgs...)
 			return err
 		}
 
-		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
-		if err != nil {
-			logger.Error("recv-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		_, err = output.Write(append(responseBuffer, []byte("\n")...))
-		if err != nil {
-			logger.Error("write-output", logger.Fail, messageArgs...)
-			return err
-		}
-		
-		//if string(responseBuffer) != clientMessage {
-			//logger.Error("check-response", logger.Fail, messageArgs...)
-			//return err
-		//}
-
-		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
 	}
 
 	if err := scanner.Err(); err != nil {
 		logger.Error("scan-input-file", logger.Fail, "file", client.config.InputFile)
+		return err
+	}
+	// Client ends communication by sending 4 zero bytes
+	endMarker := make([]byte, 4)
+	if err := safe_socket.SendAll(client.conn, endMarker); err != nil {
+		logger.Error("send-end-marker", logger.Fail, "agency-id", client.config.AgencyId)
+		return err
+	}
+
+	responseSizeBytes, err := safe_socket.RecvAll(client.conn, 4)
+	if err != nil {
+		logger.Error("receive-response-size", logger.Fail, "agency-id", client.config.AgencyId)
+		return err
+	}
+	
+	responseSize := binary.BigEndian.Uint32(responseSizeBytes)
+	response, err := safe_socket.RecvAll(client.conn, int(responseSize))
+	if err != nil {
+		logger.Error("receive-response", logger.Fail, "agency-id", client.config.AgencyId)
+		return err
+	}
+	
+	_, err = output.Write(response)
+	if err != nil {
+		logger.Error("write-response", logger.Fail, "agency-id", client.config.AgencyId)
 		return err
 	}
 
