@@ -2,9 +2,6 @@ import socket
 import logger
 import safe_socket
 import lottery
-import csv
-import io
-
 
 class Server:
     def __init__(self, server_host: str, server_port: int, output_file: str) -> None:
@@ -36,7 +33,11 @@ class Server:
 
                 client_message = safe_socket.recv_all(client_socket, size)
                 logger.info(action, logger.LogResult.in_progress, "message", client_message)
-                bet = self._store_bet(lottery_instance, client_message)
+
+                client_message = client_message.decode("utf-8")
+                bets = client_message.split("\n")
+                for bet in bets:
+                    self._store_bet(lottery_instance, bet)
 
                 if agency_id is None:
                     agency_id = bet.agency_id
@@ -68,24 +69,29 @@ class Server:
         if not winners:
             return b""
 
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, quoting=csv.QUOTE_MINIMAL)
+        lines = []
         for bet in winners:
-            writer.writerow([bet.agency_id, bet.first_name, bet.last_name, bet.document, bet.birthdate, bet.number])
+            lines.append(f"{bet.first_name},{bet.last_name},{bet.document},{bet.birthdate},{bet.number}")
 
-        return buffer.getvalue().encode("utf-8")
+        return "\n".join(lines).encode("utf-8")
 
-    def _store_bet(self, lottery_instance, client_message):
-        message = client_message.decode("utf-8")
-        reader = csv.reader([message], quoting=csv.QUOTE_MINIMAL)
-        for row in reader:
-            if not row:
-                continue
-            [agency_id, first_name, last_name, document, birthdate, number] = row
+    def _store_bet(self, lottery_instance, bet_message):
+        
+        row = bet_message.split(",")
 
-            bet = lottery.Bet(int(agency_id), first_name, last_name, int(document), birthdate, int(number))
+        if len(row) != 6:
+            raise ValueError("Invalid bet message format")
 
-            lottery_instance.store_bets([bet])
+        agency_id = int(row[0])
+        first_name = row[1]
+        last_name = row[2]
+        document = int(row[3])
+        birthdate = row[4]
+        number = int(row[5])
+        
+        bet = lottery.Bet(agency_id, first_name, last_name, document, birthdate, number)
+
+        lottery_instance.store_bets([bet])
         
         return bet
 

@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 	"encoding/binary"
+	"strings"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
@@ -14,9 +15,6 @@ import (
 const CONNECTION_ATTEMPTS_MAX = 3
 const CONNECTION_ATTEMPS_DELAY_MS = 200
 
-//const ECHO_CLIENT_BUFFER_SIZE = 512
-//const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-//const ECHO_CLIENT_MESSAGE_DELAY_MS = 100
 
 type ClientConfig struct {
 	ServerHost string
@@ -24,6 +22,7 @@ type ClientConfig struct {
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  int
 }
 
 type Client struct {
@@ -64,7 +63,7 @@ func connectToServer(host, port string) (net.Conn, error) {
 }
 
 func (client *Client) Run() error {
-	const mainAction = "test-echo-server"
+	const mainAction = "send-bets"
 	defer client.conn.Close()
 
 	// opens file for INPUT
@@ -95,18 +94,33 @@ func (client *Client) Run() error {
 		messageArgs := []any{"agency-id", client.config.AgencyId, "line", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		clientMessage := client.config.AgencyId + "," + line
-		line_size := len(clientMessage)
+		clientMessage := []string{}
+		spaceUsed := 0
+		for spaceUsed < client.config.BatchSize {
+			if spaceUsed + len(client.config.AgencyId) + len(line) + 1 > client.config.BatchSize {
+				break
+			}
+			clientMessage = append(clientMessage, client.config.AgencyId+","+line)
+			spaceUsed += len(client.config.AgencyId) + len(line) + 1
+			if !scanner.Scan() {
+				break
+			}
+			line = scanner.Text()
+		}
 
-		line_size_bytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(line_size_bytes, uint32(line_size))
+		message := strings.Join(clientMessage, "\n")
+		messageBytes := []byte(message)
+		messageSize := len(messageBytes)
+
+		lineSizeBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(lineSizeBytes, uint32(messageSize))
 		
-		if err := safe_socket.SendAll(client.conn, line_size_bytes); err != nil {
+		if err := safe_socket.SendAll(client.conn, lineSizeBytes); err != nil {
 			logger.Error("send-message", logger.Fail, messageArgs...)
 			return err
 		}
 		
-		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
+		if err := safe_socket.SendAll(client.conn, messageBytes); err != nil {
 			logger.Error("send-message", logger.Fail, messageArgs...)
 			return err
 		}
