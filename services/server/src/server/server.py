@@ -19,16 +19,13 @@ class Server:
             while True:
                 line_size = safe_socket.recv_all(client_socket, 4)
                 size = int.from_bytes(line_size, "big")
+
+                # If there're no more bets from the client
                 if size == 0:
                     winners = self._get_winners(lottery_instance, agency_id)
+                    self._send_response(client_socket, winners)
                     logger.info(action, logger.LogResult.success, "winners-amount", len(winners))
 
-                    response = self._serialize_winners(winners)
-                    response_size = len(response).to_bytes(4, "big")
-
-                    safe_socket.send_all(client_socket, response_size)
-                    safe_socket.send_all(client_socket, response)
-                    logger.info(action, logger.LogResult.success, "response-sent")
                     return
 
                 client_message = safe_socket.recv_all(client_socket, size)
@@ -36,13 +33,18 @@ class Server:
 
                 client_message = client_message.decode("utf-8")
                 bets = client_message.split("\n")
-                for bet in bets:
-                    self._store_bet(lottery_instance, bet)
 
-                if agency_id is None:
-                    agency_id = bet.agency_id
+                for bet_message in bets:
+                    if bet_message == "":
+                        continue
+
+                    bet = self._store_bet(lottery_instance, bet_message)
+
+                    if agency_id is None:
+                        agency_id = bet.agency_id
 
                 message_amount += 1    
+
 
         except ConnectionError:
             logger.error(
@@ -52,7 +54,10 @@ class Server:
             logger.error(
                 action, logger.LogResult.fail, "messages-amount", message_amount
             )
-            raise e
+            try:
+                self._send_response(client_socket, [], error=str(e))
+            except Exception:
+                pass
 
     def _get_winners(self, lottery_instance, agency_id):
         if agency_id is None:
@@ -65,15 +70,28 @@ class Server:
 
         return winners
 
+    def _send_response(self, client_socket, winners, error=None):
+        if error:
+            response_text = f"ERROR\n{error}"
+        else:
+            response_text = "OK\n" + self._serialize_winners(winners)
+
+        response = response_text.encode("utf-8")
+        response_size = len(response).to_bytes(4, "big")
+
+        safe_socket.send_all(client_socket, response_size)
+        safe_socket.send_all(client_socket, response)
+
+
     def _serialize_winners(self, winners):
         if not winners:
-            return b""
+            return ""
 
         lines = []
         for bet in winners:
             lines.append(f"{bet.first_name},{bet.last_name},{bet.document},{bet.birthdate},{bet.number}")
 
-        return "\n".join(lines).encode("utf-8")
+        return "\n".join(lines)
 
     def _store_bet(self, lottery_instance, bet_message):
         
@@ -109,4 +127,5 @@ class Server:
                     raise e
                 logger.info(action, logger.LogResult.success)
 
-                self._handle_client(client_socket)
+                with client_socket: # Close socket after handling
+                    self._handle_client(client_socket)

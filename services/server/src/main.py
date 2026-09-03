@@ -6,7 +6,7 @@ import server
 
 SERVER_HOST = os.environ["SERVER_HOST"]
 SERVER_PORT = int(os.environ["SERVER_PORT"])
-OUTPUT_FILE = os.environ["OUTPUT_FILE"]
+OUTPUT_FILE = "/output/output-bets-server.csv"
 
 def main():
     logger.init()

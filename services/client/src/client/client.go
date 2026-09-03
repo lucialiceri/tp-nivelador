@@ -7,6 +7,7 @@ import (
 	"time"
 	"encoding/binary"
 	"strings"
+	"fmt"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
@@ -62,6 +63,31 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+func (client *Client) sendBatch(batch []string) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	message := strings.Join(batch, "\n")
+	mesageBytes := []byte(message)
+	messageSize := len(mesageBytes)
+
+	sizeBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(sizeBytes, uint32(messageSize))
+
+	if err := safe_socket.SendAll(client.conn, sizeBytes); err != nil {
+		logger.Error("send-batch-size", logger.Fail, "error", err)
+		return err
+	}
+
+	if err := safe_socket.SendAll(client.conn, mesageBytes); err != nil {
+		logger.Error("send-batch", logger.Fail, "error", err)
+		return err
+	}
+
+	return nil
+}
+
 func (client *Client) Run() error {
 	const mainAction = "send-bets"
 	defer client.conn.Close()
@@ -87,6 +113,8 @@ func (client *Client) Run() error {
 	defer output.Close()
 	
 	scanner := bufio.NewScanner(input)
+
+	batch := []string{}
 	
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -94,36 +122,18 @@ func (client *Client) Run() error {
 		messageArgs := []any{"agency-id", client.config.AgencyId, "line", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		clientMessage := []string{}
-		spaceUsed := 0
-		for spaceUsed < client.config.BatchSize {
-			if spaceUsed + len(client.config.AgencyId) + len(line) + 1 > client.config.BatchSize {
-				break
-			}
-			clientMessage = append(clientMessage, client.config.AgencyId+","+line)
-			spaceUsed += len(client.config.AgencyId) + len(line) + 1
-			if !scanner.Scan() {
-				break
-			}
-			line = scanner.Text()
-		}
-
-		message := strings.Join(clientMessage, "\n")
-		messageBytes := []byte(message)
-		messageSize := len(messageBytes)
-
-		lineSizeBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(lineSizeBytes, uint32(messageSize))
+		lineMessage := client.config.AgencyId + "," + line
 		
-		if err := safe_socket.SendAll(client.conn, lineSizeBytes); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
-			return err
-		}
-		
-		if err := safe_socket.SendAll(client.conn, messageBytes); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
-			return err
-		}
+		if len(batch) < client.config.BatchSize {
+        batch = append(batch, lineMessage)
+        continue
+    }
+ 
+    if err := client.sendBatch(batch); err != nil {
+        return err
+    }
+        
+    batch = []string{lineMessage}
 
 	}
 
@@ -131,6 +141,13 @@ func (client *Client) Run() error {
 		logger.Error("scan-input-file", logger.Fail, "file", client.config.InputFile)
 		return err
 	}
+
+	// Send remaining batch
+	if err := client.sendBatch(batch); err != nil {
+		logger.Error("send-batch", logger.Fail, "error", err)
+		return err
+	}
+	
 	// Client ends communication by sending 4 zero bytes
 	endMarker := make([]byte, 4)
 	if err := safe_socket.SendAll(client.conn, endMarker); err != nil {
@@ -144,6 +161,7 @@ func (client *Client) Run() error {
 		return err
 	}
 	
+	// Gets a response from the server
 	responseSize := binary.BigEndian.Uint32(responseSizeBytes)
 	response, err := safe_socket.RecvAll(client.conn, int(responseSize))
 	if err != nil {
@@ -151,7 +169,18 @@ func (client *Client) Run() error {
 		return err
 	}
 	
-	_, err = output.Write(response)
+	responseParts := strings.SplitN(string(response), "\n", 2)
+	if responseParts[0] != "OK" {
+		logger.Error("server-response-status", logger.Fail, "agency-id", client.config.AgencyId, "response", string(response))
+		return fmt.Errorf("server rejected bets: %s", response)
+	}
+
+	winners := []byte{}
+	if len(responseParts) > 1 {
+		winners = []byte(responseParts[1])
+	}
+
+	_, err = output.Write(winners)
 	if err != nil {
 		logger.Error("write-response", logger.Fail, "agency-id", client.config.AgencyId)
 		return err
