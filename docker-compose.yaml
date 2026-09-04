@@ -9,6 +9,7 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=5678
       - OUTPUT_FILE=/output/output-bets-server.csv
+      - AGENCY_QUORUM_MIN=3
     ports:
       - "5678:5678"
     volumes:
@@ -61,7 +62,7 @@ services:
       - AGENCY_ID=2
       - SERVER_HOST=server
       - SERVER_PORT=5678
-      - INPUT_FILE=/input/input-1.csv
+      - INPUT_FILE=/input/input-2.csv
       - OUTPUT_FILE=/output/output-2.csv
       - BATCH_SIZE=512
     volumes:

@@ -3,14 +3,16 @@ import sys
 
 import logger
 import server
+import multiprocessing
 
 SERVER_HOST = os.environ["SERVER_HOST"]
 SERVER_PORT = int(os.environ["SERVER_PORT"])
 OUTPUT_FILE = "/output/output-bets-server.csv"
+AGENCY_QUORUM_MIN = int(os.environ.get("AGENCY_QUORUM_MIN", "1"))
 
 def main():
     logger.init()
-    s = server.Server(SERVER_HOST, SERVER_PORT, OUTPUT_FILE)
+    s = server.Server(SERVER_HOST, SERVER_PORT, OUTPUT_FILE, AGENCY_QUORUM_MIN)
     try:
         s.run()
     except Exception as e:
@@ -20,4 +22,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("fork", force=True)
     sys.exit(main())

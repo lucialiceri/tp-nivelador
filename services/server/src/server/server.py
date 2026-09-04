@@ -2,48 +2,75 @@ import socket
 import logger
 import safe_socket
 import lottery
+import multiprocessing
+import signal
 
 class Server:
-    def __init__(self, server_host: str, server_port: int, output_file: str) -> None:
+    def __init__(self, server_host: str, server_port: int, output_file: str, agency_quorum_min: int) -> None:
         self.server_host = server_host
         self.server_port = server_port
         self.output_file = output_file
+        self.agency_quorum_min = agency_quorum_min
+        self._lottery = lottery.Lottery(self.output_file) # One instance for all clients
+        self._lottery_lock = multiprocessing.Lock()
+        self._agency_ids = multiprocessing.Array('i', 10, lock=False)
+        self._agency_ids[:] = [-1] * 10
+        self._agency_count = multiprocessing.Value('i', 0, lock=False)
+        self._condition = multiprocessing.Condition()
+        self._children = []
+        self._shutdown = False
+        
 
     def _handle_client(self, client_socket):
         action = "handle-client"
         message_amount = 0
         agency_id = None
-        lottery_instance = lottery.Lottery(self.output_file)
+
         try:
-            logger.info(action, logger.LogResult.in_progress)
-            while True:
-                line_size = safe_socket.recv_all(client_socket, 4)
-                size = int.from_bytes(line_size, "big")
+            with client_socket:
+                logger.info(action, logger.LogResult.in_progress)
+                while True:
+                    line_size = safe_socket.recv_all(client_socket, 4)
+                    size = int.from_bytes(line_size, "big")
 
-                # If there're no more bets from the client
-                if size == 0:
-                    winners = self._get_winners(lottery_instance, agency_id)
-                    self._send_response(client_socket, winners)
-                    logger.info(action, logger.LogResult.success, "winners-amount", len(winners))
+                    # If there're no more bets from the client
+                    if size == 0:
+                        if agency_id is None:
+                            logger.error(action, logger.LogResult.fail, "agency-id-not-set")
+                            return
+                        with self._condition:
+                            current = self._agency_ids[:self._agency_count.value]
+                            if agency_id not in current:
+                                self._agency_ids[self._agency_count.value] = agency_id
+                                self._agency_count.value += 1
+                            if self._agency_count.value >= self.agency_quorum_min:
+                                self._condition.notify_all()
+                            while self._agency_count.value < self.agency_quorum_min:
+                                self._condition.wait()
 
-                    return
 
-                client_message = safe_socket.recv_all(client_socket, size)
-                logger.info(action, logger.LogResult.in_progress, "message", client_message)
+                        winners = self._get_winners(agency_id)
+                        self._send_response(client_socket, winners)
+                        logger.info(action, logger.LogResult.success, "winners-amount", len(winners))
+                        
+                        return
 
-                client_message = client_message.decode("utf-8")
-                bets = client_message.split("\n")
+                    client_message = safe_socket.recv_all(client_socket, size)
+                    logger.info(action, logger.LogResult.in_progress, "message", client_message)
 
-                for bet_message in bets:
-                    if bet_message == "":
-                        continue
+                    client_message = client_message.decode("utf-8")
+                    bets = client_message.split("\n")
 
-                    bet = self._store_bet(lottery_instance, bet_message)
+                    for bet_message in bets:
+                        if bet_message == "":
+                            continue
 
-                    if agency_id is None:
-                        agency_id = bet.agency_id
+                        bet = self._store_bet(bet_message)
 
-                message_amount += 1    
+                        if agency_id is None:
+                            agency_id = bet.agency_id
+
+                    message_amount += 1    
 
 
         except ConnectionError:
@@ -59,13 +86,16 @@ class Server:
             except Exception:
                 pass
 
-    def _get_winners(self, lottery_instance, agency_id):
+    def _get_winners(self, agency_id):
         if agency_id is None:
             return []
 
+        with self._lottery_lock:
+            all_bets = list(self._lottery.load_bets())
+
         winners = []
-        for bet in lottery_instance.load_bets():
-            if lottery_instance.has_won(bet) and bet.agency_id == agency_id:
+        for bet in all_bets:
+            if self._lottery.has_won(bet) and bet.agency_id == agency_id:
                 winners.append(bet)
 
         return winners
@@ -93,7 +123,7 @@ class Server:
 
         return "\n".join(lines)
 
-    def _store_bet(self, lottery_instance, bet_message):
+    def _store_bet(self, bet_message):
         
         row = bet_message.split(",")
 
@@ -109,7 +139,8 @@ class Server:
         
         bet = lottery.Bet(agency_id, first_name, last_name, document, birthdate, number)
 
-        lottery_instance.store_bets([bet])
+        with self._lottery_lock:
+            self._lottery.store_bets([bet])
         
         return bet
 
@@ -127,5 +158,16 @@ class Server:
                     raise e
                 logger.info(action, logger.LogResult.success)
 
-                with client_socket: # Close socket after handling
-                    self._handle_client(client_socket)
+                for p in list(self._children):
+                    if not p.is_alive():
+                        p.join()
+                        self._children.remove(p)
+ 
+                process = multiprocessing.Process(
+                    target=self._handle_client,
+                    args=(client_socket,),
+                    daemon=True,
+                )
+                process.start()
+                self._children.append(process)
+                        
